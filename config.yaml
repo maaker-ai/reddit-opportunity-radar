@@ -14,10 +14,11 @@ subreddits:
   - Entrepreneur
 
 fetch:
-  posts_per_subreddit: 25              # 每个 sub 拉最新 N 条
+  posts_per_subreddit: 10              # 每个 sub 拉最新 N 条（10 × 10 sub = 100 posts/次扫描，
+                                       # 配合 rate_limit_qpm=10 约 10 分钟跑完，留出 20 分钟 LLM 评分）
   fetch_comments_for_candidates: true  # 对候选帖子进一步拉评论
   max_comments_per_post: 20            # 评论拉前 N 条
-  rate_limit_qpm: 6                    # 保守限速（官方 10 QPM，留余量）
+  rate_limit_qpm: 10                   # 走 CF Worker 代理时可提到官方上限（本地直连时保持 6 更安全）
   # Reddit 靠 User-Agent 识别身份；用真实浏览器串降低云端 IP 被风控概率。
   # 格式建议：<platform>:<app_id>:<version> (by /u/<username>)
   user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
