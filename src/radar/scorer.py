@@ -1,14 +1,15 @@
-"""调用 OpenRouter 的 Claude 模型评分 Reddit 帖子。"""
+"""调用 shared-backend 的 llm-chat Edge Function（OpenAI 兼容接口，后端走 Gemini）评分 Reddit 帖子。"""
 from __future__ import annotations
 
 import json
-import os
 from dataclasses import dataclass
 from typing import Any
 
 import httpx
 
-OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+# shared-backend Supabase 项目的 llm-chat Edge Function（OpenAI 兼容 → Gemini）
+# 注册表参考：~/.claude/skills/backend-services/SKILL.md 1.4 节
+LLM_ENDPOINT = "https://rxcrvznwlqcaqrlaxmdf.supabase.co/functions/v1/llm-chat"
 
 PROMPT_TEMPLATE = """你是一个 App 开发机会嗅探器。给你一个 Reddit 帖子（可能附带评论），判断它是否包含创业/App 开发的需求信号。
 
@@ -59,13 +60,11 @@ class Score:
 
 
 class Scorer:
-    def __init__(self, model: str, api_key: str | None = None, timeout: float = 60.0):
+    """调 shared-backend 的 llm-chat。无需本地 API Key，Key 在 Supabase Secrets 里。"""
+
+    def __init__(self, model: str, endpoint: str = LLM_ENDPOINT, timeout: float = 60.0):
         self.model = model
-        self.api_key = api_key or os.environ.get("OPENROUTER_API_KEY", "")
-        if not self.api_key:
-            raise RuntimeError(
-                "缺少 OPENROUTER_API_KEY，请设置环境变量或填入 .env 文件"
-            )
+        self.endpoint = endpoint
         self.client = httpx.Client(timeout=timeout)
 
     def close(self) -> None:
@@ -91,13 +90,9 @@ class Scorer:
             "messages": [{"role": "user", "content": prompt}],
             "response_format": {"type": "json_object"},
         }
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-            "HTTP-Referer": "https://github.com/local/reddit-opportunity-radar",
-            "X-Title": "Reddit Opportunity Radar",
-        }
-        resp = self.client.post(OPENROUTER_URL, json=payload, headers=headers)
+        # llm-chat 不要求鉴权，Edge Function verify_jwt=false
+        headers = {"Content-Type": "application/json"}
+        resp = self.client.post(self.endpoint, json=payload, headers=headers)
         resp.raise_for_status()
         data = resp.json()
         content = data["choices"][0]["message"]["content"]

@@ -1,6 +1,6 @@
 # Reddit 机会雷达 (reddit-opportunity-radar)
 
-每天自动扫描一批 Reddit subreddit，用 Claude 判断哪些帖子/评论里藏着 App 开发机会（明确需求、对现有工具的吐槽、日常痛点等），生成 Markdown 报告。
+每天自动扫描一批 Reddit subreddit，用 LLM 判断哪些帖子/评论里藏着 App 开发机会（明确需求、对现有工具的吐槽、日常痛点等），生成 Markdown 报告。
 
 **关键设计**：Reddit 2025-11 后关闭了自助 API 申请。本项目**不走 OAuth**，直接读 Reddit 的公开 `.json` 端点（任何 URL 后缀加 `.json` 返回结构化数据，无需鉴权），配合保守限速确保合规。
 
@@ -9,8 +9,8 @@
 - Python 3.11+
 - `httpx` — HTTP 客户端（同步）
 - `PyYAML` — 配置
-- `python-dotenv` — 读 `.env`
-- OpenRouter — 调用 Claude（`anthropic/claude-sonnet-4.6`）
+- `python-dotenv` — 读 `.env`（当前无必填项，保留仅为未来扩展）
+- **shared-backend `llm-chat` Edge Function** — OpenAI 兼容接口，后端走 Gemini 2.5 Flash；本地不需要任何 API Key
 - SQLite — 去重 + 历史存档
 
 ## Quick Start
@@ -24,9 +24,9 @@ uv sync
 # 或
 pip install -e .
 
-# 3. 配置 OpenRouter API Key
-cp .env.example .env
-# 然后编辑 .env，把 OPENROUTER_API_KEY 换成你的 key
+# 3. （可选）本项目走 shared-backend 的 llm-chat Edge Function，
+#     LLM API Key 已在 Supabase Secrets 里，本地无需任何 Key。
+#     不用建 .env 也能跑。
 
 # 4. 编辑 config.yaml，把 user_agent 里的 `placeholder` 换成你真实的 Reddit 用户名
 #    Reddit 会通过 User-Agent 识别身份，保留 placeholder 可能被风控
@@ -63,9 +63,14 @@ fetch:
   user_agent: "opportunity-radar/0.1 by <你的 Reddit 用户名>"
 
 scoring:
-  model: "anthropic/claude-sonnet-4.6"
+  model: "gemini-2.5-flash"     # shared-backend llm-chat 白名单内，后端走 Gemini
   min_confidence: 6             # 只把 confidence >= 6 写入报告「命中」部分
 ```
+
+**可选模型**（写进 `scoring.model`）：
+- `gemini-2.5-flash`（默认）
+- `gemini-2.0-flash`
+- `gemini-2.5-pro`
 
 ### 加一个新的 subreddit
 
@@ -91,8 +96,12 @@ A: 只做以下场景：
 - 不用 Reddit 数据训练任何模型
 - 不公开转发原帖完整内容（报告里只保留标题 + 链接 + AI 总结）
 
-**Q: Claude 为什么走 OpenRouter 而不是官方 API？**
-A: 统一网关、一把 Key 访问多家模型、方便切换模型对比效果。这是用户的全局规范。
+**Q: 为什么不直接调 Gemini / OpenRouter？**
+A: 统一经 `shared-backend` 的 `llm-chat` Edge Function（OpenAI 兼容），好处是：
+- 本地无需任何 API Key，Key 集中在 Supabase Secrets
+- 后端可平滑替换模型（当前 Gemini，未来换其他家也不改本项目代码）
+- 多项目共用一个接口，便于监控和限额
+接口注册在 `~/.claude/skills/backend-services/SKILL.md` 的 §1.4。
 
 **Q: 遇到 429 怎么办？**
 A: 客户端会自动 sleep 60s 重试一次，若仍失败会打印错误并继续下一条。把 `rate_limit_qpm` 调低即可。
@@ -103,7 +112,7 @@ A: 客户端会自动 sleep 60s 重试一次，若仍失败会打印错误并继
 reddit-opportunity-radar/
   README.md
   pyproject.toml
-  .env.example              # 填 OPENROUTER_API_KEY
+  .env.example              # 占位；无必填项，可不创建 .env
   .gitignore
   config.yaml
   src/radar/
@@ -111,7 +120,7 @@ reddit-opportunity-radar/
     __main__.py             # python -m radar 入口
     main.py                 # CLI + 主流程
     reddit_client.py        # .json 端点 + 限速
-    scorer.py               # OpenRouter 调用
+    scorer.py               # shared-backend llm-chat 调用（OpenAI 兼容 → Gemini）
     storage.py              # SQLite schema + CRUD
     reporter.py             # Markdown 报告
   data/                     # 运行时创建，SQLite 文件
