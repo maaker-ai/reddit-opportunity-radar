@@ -10,7 +10,7 @@
 - `httpx` — HTTP 客户端（同步）
 - `PyYAML` — 配置
 - `python-dotenv` — 读 `.env`（当前无必填项，保留仅为未来扩展）
-- **shared-backend `llm-chat` Edge Function** — OpenAI 兼容接口，后端走 Gemini 2.5 Flash；本地不需要任何 API Key
+- **shared-backend `llm-chat` Edge Function** — OpenAI 兼容接口，后端走 Gemini 2.5 Flash；本地需要一份 `FUNCTION_SHARED_SECRET` 作为 `X-API-Key`，不需要直接的 LLM API Key
 - SQLite — 去重 + 历史存档
 
 ## Quick Start
@@ -24,9 +24,11 @@ uv sync
 # 或
 pip install -e .
 
-# 3. （可选）本项目走 shared-backend 的 llm-chat Edge Function，
-#     LLM API Key 已在 Supabase Secrets 里，本地无需任何 Key。
-#     不用建 .env 也能跑。
+# 3. 配置 Secret：llm-chat 已启用 X-API-Key 鉴权
+#     cp .env.example .env
+#     # 向项目 owner 索取 FUNCTION_SHARED_SECRET
+#     # 写入 .env 的 LLM_CHAT_SECRET=<secret>
+#     # .env 已在 .gitignore，不会进 git
 
 # 4. 编辑 config.yaml，把 user_agent 里的 `placeholder` 换成你真实的 Reddit 用户名
 #    Reddit 会通过 User-Agent 识别身份，保留 placeholder 可能被风控
@@ -98,10 +100,11 @@ A: 只做以下场景：
 
 **Q: 为什么不直接调 Gemini / OpenRouter？**
 A: 统一经 `shared-backend` 的 `llm-chat` Edge Function（OpenAI 兼容），好处是：
-- 本地无需任何 API Key，Key 集中在 Supabase Secrets
+- 本地无需直接持有 LLM 厂商的 API Key，Key 集中在 Supabase Secrets
 - 后端可平滑替换模型（当前 Gemini，未来换其他家也不改本项目代码）
 - 多项目共用一个接口，便于监控和限额
 接口注册在 `~/.claude/skills/backend-services/SKILL.md` 的 §1.4。
+注意：本地仍需一个 `LLM_CHAT_SECRET`（对应 Supabase 的 `FUNCTION_SHARED_SECRET`）作为 `X-API-Key` 调用鉴权，避免公开端点被滥用。
 
 **Q: 遇到 429 怎么办？**
 A: 客户端会自动 sleep 60s 重试一次，若仍失败会打印错误并继续下一条。把 `rate_limit_qpm` 调低即可。
@@ -112,7 +115,7 @@ A: 客户端会自动 sleep 60s 重试一次，若仍失败会打印错误并继
 reddit-opportunity-radar/
   README.md
   pyproject.toml
-  .env.example              # 占位；无必填项，可不创建 .env
+  .env.example              # 必填 LLM_CHAT_SECRET；复制为 .env 后填入
   .gitignore
   config.yaml
   src/radar/

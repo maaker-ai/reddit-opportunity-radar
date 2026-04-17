@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from typing import Any
 
@@ -60,12 +61,22 @@ class Score:
 
 
 class Scorer:
-    """调 shared-backend 的 llm-chat。无需本地 API Key，Key 在 Supabase Secrets 里。"""
+    """调 shared-backend 的 llm-chat。
+
+    鉴权：调用方必须提供 FUNCTION_SHARED_SECRET（通过环境变量 LLM_CHAT_SECRET 注入）
+    作为 X-API-Key header。Secret 存在 Supabase Secrets 里，本地 .env 存一份副本。
+    """
 
     def __init__(self, model: str, endpoint: str = LLM_ENDPOINT, timeout: float = 60.0):
         self.model = model
         self.endpoint = endpoint
         self.client = httpx.Client(timeout=timeout)
+        self.secret = os.environ.get("LLM_CHAT_SECRET")
+        if not self.secret:
+            raise RuntimeError(
+                "LLM_CHAT_SECRET env var required to call shared-backend llm-chat. "
+                "Ask the project owner for FUNCTION_SHARED_SECRET and put it in .env."
+            )
 
     def close(self) -> None:
         self.client.close()
@@ -90,8 +101,11 @@ class Scorer:
             "messages": [{"role": "user", "content": prompt}],
             "response_format": {"type": "json_object"},
         }
-        # llm-chat 不要求鉴权，Edge Function verify_jwt=false
-        headers = {"Content-Type": "application/json"}
+        # llm-chat 需要 X-API-Key 鉴权（FUNCTION_SHARED_SECRET）
+        headers = {
+            "Content-Type": "application/json",
+            "X-API-Key": self.secret,
+        }
         resp = self.client.post(self.endpoint, json=payload, headers=headers)
         resp.raise_for_status()
         data = resp.json()
