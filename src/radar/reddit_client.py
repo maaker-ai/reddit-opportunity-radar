@@ -16,8 +16,8 @@ from typing import Any
 
 import httpx
 
-BASE_URL = "https://www.reddit.com"
-REDDIT_HOSTS = ("www.reddit.com", "reddit.com", "oauth.reddit.com")
+BASE_URL = "https://old.reddit.com"
+REDDIT_HOSTS = ("www.reddit.com", "reddit.com", "old.reddit.com", "oauth.reddit.com")
 
 
 @dataclass
@@ -101,13 +101,13 @@ def _enable_dns_fallback_if_needed() -> bool:
         return True
     try:
         # 尝试一个轻量 TCP 连接到默认解析得到的 IP
-        test_sock = socket.create_connection(("www.reddit.com", 443), timeout=4)
+        test_sock = socket.create_connection(("old.reddit.com", 443), timeout=4)
         test_sock.close()
         return False  # 直连 OK，不需要 DoH
     except OSError:
         pass
 
-    ips = _doh_resolve("www.reddit.com")
+    ips = _doh_resolve("old.reddit.com")
     if not ips:
         # DoH 也失败，无能为力
         return False
@@ -136,11 +136,18 @@ class RedditClient:
         _enable_dns_fallback_if_needed()
         # 关键：禁用 keep-alive。Reddit 对同一 TCP 连接上的重复请求有反爬机制，
         # 第二次请求起会返回 403 HTML challenge 页。每请求新建连接绕过。
+        # 浏览器风格的 headers，降低云端 IP 被风控概率。
         self.client = httpx.Client(
             headers={
                 "User-Agent": user_agent,
                 "Accept": "application/json, text/plain, */*",
                 "Accept-Language": "en-US,en;q=0.9",
+                "Accept-Encoding": "gzip, deflate, br",
+                "Cache-Control": "no-cache",
+                "Pragma": "no-cache",
+                "Sec-Fetch-Dest": "empty",
+                "Sec-Fetch-Mode": "cors",
+                "Sec-Fetch-Site": "same-origin",
                 "Connection": "close",
             },
             timeout=timeout,

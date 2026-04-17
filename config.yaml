@@ -18,7 +18,9 @@ fetch:
   fetch_comments_for_candidates: true  # 对候选帖子进一步拉评论
   max_comments_per_post: 20            # 评论拉前 N 条
   rate_limit_qpm: 6                    # 保守限速（官方 10 QPM，留余量）
-  user_agent: "opportunity-radar/0.1 by placeholder"
+  # Reddit 靠 User-Agent 识别身份；用真实浏览器串降低云端 IP 被风控概率。
+  # 格式建议：<platform>:<app_id>:<version> (by /u/<username>)
+  user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
 scoring:
   model: "gemini-2.5-flash"            # 经 shared-backend llm-chat 调用（白名单内）
