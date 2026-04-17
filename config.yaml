@@ -1,0 +1,25 @@
+# Reddit 机会雷达配置
+# 修改 user_agent 里的 <your-reddit-username> 为你的真实 Reddit 用户名
+
+subreddits:
+  - SomebodyMakeThis
+  - AppIdeas
+  - AppHookup
+  - lightweightapps
+  - productivity
+  - getdisciplined
+  - selfimprovement
+  - iosapps
+  - androidapps
+  - Entrepreneur
+
+fetch:
+  posts_per_subreddit: 25              # 每个 sub 拉最新 N 条
+  fetch_comments_for_candidates: true  # 对候选帖子进一步拉评论
+  max_comments_per_post: 20            # 评论拉前 N 条
+  rate_limit_qpm: 6                    # 保守限速（官方 10 QPM，留余量）
+  user_agent: "opportunity-radar/0.1 by placeholder"
+
+scoring:
+  model: "anthropic/claude-sonnet-4.6"
+  min_confidence: 6                    # 只把 confidence >= N 的写入报告"命中"部分

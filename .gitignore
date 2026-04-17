@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual env
+.venv
+
+# 敏感与运行时产物
+.env
+data/
+reports/
+
+# 编辑器
+.vscode/
+.idea/
+.DS_Store
