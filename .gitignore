@@ -9,10 +9,11 @@ wheels/
 # Virtual env
 .venv
 
-# 敏感与运行时产物
+# 敏感信息（绝对不能入库）
 .env
+
+# 运行时 SQLite 状态，不进 git（走 GitHub Actions cache）
 data/
-reports/
 
 # 编辑器
 .vscode/

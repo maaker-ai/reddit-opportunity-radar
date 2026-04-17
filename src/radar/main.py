@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -9,6 +10,7 @@ from pathlib import Path
 import yaml
 from dotenv import load_dotenv
 
+from radar.notifier import notify_signals
 from radar.reddit_client import Post, RedditClient
 from radar.reporter import write_report
 from radar.scorer import Score, Scorer
@@ -152,6 +154,34 @@ def main(argv: list[str] | None = None) -> int:
         posts=rows,
         min_confidence=min_conf,
     )
+
+    # Telegram 推送：只推本次扫描新命中的高分信号
+    new_signals = [
+        {
+            "subreddit": p.subreddit,
+            "title": p.title,
+            "permalink": p.permalink,
+            "category": p.category,
+            "confidence": p.confidence,
+            "summary": p.score.get("summary", ""),
+            "app_idea": p.score.get("app_idea", ""),
+            "target_audience": p.score.get("target_audience", ""),
+        }
+        for p in rows
+        if p.is_signal and p.confidence >= min_conf
+    ]
+    if new_signals and os.getenv("TELEGRAM_BOT_TOKEN"):
+        print(f"[notify] pushing {len(new_signals)} signals to Telegram")
+        sent = notify_signals(new_signals)
+        print(f"[notify] sent {sent}/{len(new_signals)}")
+    elif new_signals:
+        print(
+            f"[notify] {len(new_signals)} signals detected but "
+            "TELEGRAM_BOT_TOKEN not set; skipping push"
+        )
+    else:
+        print("[notify] 0 signals to push")
+
     storage.close()
     print(
         f"[done] fetched={total_fetched} new={total_new} "

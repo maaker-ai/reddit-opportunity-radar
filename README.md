@@ -1,8 +1,33 @@
 # Reddit 机会雷达 (reddit-opportunity-radar)
 
-每天自动扫描一批 Reddit subreddit，用 LLM 判断哪些帖子/评论里藏着 App 开发机会（明确需求、对现有工具的吐槽、日常痛点等），生成 Markdown 报告。
+![Hourly Scan](https://github.com/maaker-ai/reddit-opportunity-radar/actions/workflows/hourly-scan.yml/badge.svg)
+![Daily Digest](https://github.com/maaker-ai/reddit-opportunity-radar/actions/workflows/daily-digest.yml/badge.svg)
+
+每小时自动扫描一批 Reddit subreddit，用 LLM 判断哪些帖子/评论里藏着 App 开发机会（明确需求、对现有工具的吐槽、日常痛点等），把高分信号主动推送到 Telegram，并把 Markdown 报告归档到本仓库 `reports/` 目录。
 
 **关键设计**：Reddit 2025-11 后关闭了自助 API 申请。本项目**不走 OAuth**，直接读 Reddit 的公开 `.json` 端点（任何 URL 后缀加 `.json` 返回结构化数据，无需鉴权），配合保守限速确保合规。
+
+## Deployment
+
+本仓库默认部署在 GitHub Actions，**不依赖任何本地机器**：
+
+- `.github/workflows/hourly-scan.yml` — 每小时（UTC 整点）跑一次扫描
+  - SQLite 去重状态通过 `actions/cache` 跨运行持久化
+  - 新报告自动 commit 到 `reports/YYYY-MM-DD.md`
+  - confidence ≥ 6 的信号逐条推送到 Telegram
+- `.github/workflows/daily-digest.yml` — 每天 UTC 00:00（北京时间 08:00）跑一次
+  - 汇总过去 24h 的扫描 / 命中 / 分类分布 / Top 5 信号
+  - 发一条 Telegram 汇总消息
+
+### 环境变量 / Secrets
+
+| 变量 | 用途 | 本地 `.env` | GitHub Actions Secret |
+|------|------|-------------|------------------------|
+| `LLM_CHAT_SECRET` | shared-backend `llm-chat` Edge Function 的 `X-API-Key` | 必填 | 以 `FUNCTION_SHARED_SECRET` 存储 |
+| `TELEGRAM_BOT_TOKEN` | Bot 令牌（@BotFather 获取） | 可选，没填则跳过推送 | 必填，否则不推送 |
+| `TELEGRAM_CHAT_ID` | 收消息的个人/群 Chat ID | 同上 | 同上 |
+
+值请向 project owner 索取，公开仓库严禁写入源码 / commit / 日志。
 
 ## 技术栈
 
@@ -130,10 +155,19 @@ reddit-opportunity-radar/
   reports/                  # 运行时创建，每日报告
 ```
 
+## Disclaimer
+
+本项目仅用于个人非商业的选品/机会嗅探，遵循以下原则：
+
+- 只读 Reddit 公开 `.json` 端点，不做身份抓取，不绕过任何鉴权
+- 客户端限速 6 QPM（低于 Reddit 官方 10 QPM 限额）
+- 不转发原帖完整正文（报告内仅保留标题 / 链接 / AI 总结）
+- 不用任何数据训练模型、不二次分发、不商业化
+
+如果你在 Reddit 侧发现本项目的行为不符合你的预期，欢迎开 issue。
+
 ## TODO
 
-- [ ] cron / launchd / systemd timer 每日自动跑（macOS 可以 `crontab -e` 加一行）
-- [ ] Telegram Bot 推送命中信号（报告生成后发消息到 channel）
 - [ ] 多语言报告（英文版同步生成）
 - [ ] 历史趋势：同一主题持续多天出现时自动聚类
 - [ ] 用 `r/subreddit/top.json?t=day` 补充热门帖（目前只拉 `/new.json`）
