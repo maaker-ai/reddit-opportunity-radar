@@ -69,9 +69,9 @@ def consolidate(
             "permalink": s.get("permalink", ""),
             "category": s.get("category", "NONE"),
             "confidence": s.get("confidence", 0),
-            "summary": s.get("summary", ""),
-            "app_idea": s.get("app_idea", ""),
-            "target_audience": s.get("target_audience", ""),
+            "summary": (s.get("summary", "") or "")[:200],
+            "app_idea": (s.get("app_idea", "") or "")[:200],
+            "target_audience": (s.get("target_audience", "") or "")[:150],
         }
         for s in signals
         if s.get("is_signal")
@@ -96,18 +96,28 @@ def consolidate(
         json={
             "model": model,
             "messages": [{"role": "user", "content": prompt}],
-            "max_tokens": 8000,
+            "max_tokens": 16000,
             "response_format": {"type": "json_object"},
         },
         timeout=timeout,
     )
     resp.raise_for_status()
-    content = resp.json()["choices"][0]["message"]["content"]
+    data = resp.json()
+    choice = data["choices"][0]
+    content = choice["message"]["content"]
+    finish_reason = choice.get("finish_reason", "")
+    if finish_reason == "length":
+        print(
+            f"[consolidator] WARN: response truncated (finish_reason=length, "
+            f"content_len={len(content)}); attempting salvage"
+        )
     return _parse_json_lenient(content)
 
 
 def _parse_json_lenient(text: str) -> dict[str, Any]:
-    """宽松解析：去 markdown fence + 截取第一个平衡的 {...} 块。"""
+    """宽松解析：去 markdown fence + 截取第一个平衡的 {...} 块。
+    响应被截断时尝试抢救：从 top_opportunities 数组中保留已完整的元素。
+    """
     t = text.strip()
     if t.startswith("```"):
         lines = t.splitlines()
@@ -143,4 +153,59 @@ def _parse_json_lenient(text: str) -> dict[str, Any]:
             depth -= 1
             if depth == 0:
                 return json.loads(t[start : i + 1])
+
+    # 抢救：响应被截断。从第一个 `"top_opportunities": [` 开始，
+    # 手动解析已完整的数组元素（到最后一个平衡的 }），拼出合法 JSON。
+    salvaged = _salvage_truncated(t[start:])
+    if salvaged is not None:
+        print(f"[consolidator] salvaged {len(salvaged.get('top_opportunities', []))} items from truncated response")
+        return salvaged
     raise ValueError("unbalanced JSON in consolidator response")
+
+
+def _salvage_truncated(body: str) -> dict[str, Any] | None:
+    """Truncated response salvage: extract completed top_opportunities items."""
+    marker = '"top_opportunities"'
+    m_idx = body.find(marker)
+    if m_idx < 0:
+        return None
+    arr_start = body.find("[", m_idx)
+    if arr_start < 0:
+        return None
+
+    items: list[dict[str, Any]] = []
+    depth = 0
+    in_str = False
+    escape = False
+    obj_start = -1
+    for i in range(arr_start + 1, len(body)):
+        ch = body[i]
+        if escape:
+            escape = False
+            continue
+        if ch == "\\":
+            escape = True
+            continue
+        if ch == '"':
+            in_str = not in_str
+            continue
+        if in_str:
+            continue
+        if ch == "{":
+            if depth == 0:
+                obj_start = i
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0 and obj_start >= 0:
+                try:
+                    items.append(json.loads(body[obj_start : i + 1]))
+                except Exception:
+                    break
+                obj_start = -1
+        elif ch == "]" and depth == 0:
+            break
+
+    if not items:
+        return None
+    return {"top_opportunities": items, "other_count": 0}
