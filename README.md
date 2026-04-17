@@ -26,8 +26,16 @@
 | `LLM_CHAT_SECRET` | shared-backend `llm-chat` Edge Function 的 `X-API-Key` | 必填 | 以 `FUNCTION_SHARED_SECRET` 存储 |
 | `TELEGRAM_BOT_TOKEN` | Bot 令牌（@BotFather 获取） | 可选，没填则跳过推送 | 必填，否则不推送 |
 | `TELEGRAM_CHAT_ID` | 收消息的个人/群 Chat ID | 同上 | 同上 |
+| `REDDIT_PROXY_URL` | Cloudflare Worker 透明代理 URL | 可选（住宅 IP 直连可跳过） | 必填（数据中心 IP 被 Reddit 拦） |
+| `REDDIT_PROXY_SECRET` | Worker 鉴权 secret | 同上 | 同上 |
 
 值请向 project owner 索取，公开仓库严禁写入源码 / commit / 日志。
+
+### Reddit 代理（CF Worker）
+
+Reddit 2026 起封锁了 Azure/GCP/AWS 的 IP 段，GitHub Actions runner 直连会全部返回 403。本项目通过 Cloudflare Worker 做**透明代理**绕过——CF 边缘 IP 不在 Reddit 黑名单里。
+
+Worker 源码独立维护在 `reddit-proxy-worker` 项目。客户端自动检测：`REDDIT_PROXY_URL` 和 `REDDIT_PROXY_SECRET` 都设置时走代理（用浏览器 User-Agent 伪装），否则直连（用 config.yaml 里的 UA + DoH DNS 回退）。
 
 ## 技术栈
 

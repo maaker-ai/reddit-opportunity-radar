@@ -40,6 +40,8 @@ jobs:
           LLM_CHAT_SECRET: ${{ secrets.FUNCTION_SHARED_SECRET }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          REDDIT_PROXY_URL: ${{ secrets.REDDIT_PROXY_URL }}
+          REDDIT_PROXY_SECRET: ${{ secrets.REDDIT_PROXY_SECRET }}
         run: uv run python -m radar
 
       - name: Save SQLite state
