@@ -14,10 +14,48 @@
 - `.github/workflows/hourly-scan.yml` — 每小时（UTC 整点）跑一次扫描
   - SQLite 去重状态通过 `actions/cache` 跨运行持久化
   - 新报告自动 commit 到 `reports/YYYY-MM-DD.md`
-  - confidence ≥ 6 的信号逐条推送到 Telegram
+  - 本次新命中的 `confidence ≥ 6` 信号经 LLM 二次聚合为 Top 5 机会，**单条**推送到 Telegram（Digest 模式，见下）
 - `.github/workflows/daily-digest.yml` — 每天 UTC 00:00（北京时间 08:00）跑一次
-  - 汇总过去 24h 的扫描 / 命中 / 分类分布 / Top 5 信号
-  - 发一条 Telegram 汇总消息
+  - 对过去 24h 所有命中信号再次调 consolidator 去重聚合（hourly 推过的同簇合并）
+  - 发一条 Telegram 汇总消息（无命中时也发一条"雷达安静"）
+
+### Digest 推送格式
+
+每次 hourly 扫描结束后，把原始信号扔给 LLM 做二次加工：
+
+1. **语义聚类**：按"需求类别 × 目标用户"把相似帖子归为一个机会簇
+2. **机会分** = 簇内帖子数 × 平均 confidence × 类别权重（NEED=1.2 / REQUEST=1.1 / PAIN=1.0 / COMPLAINT=0.9）
+3. **评级**：P0（机会分 ≥ 20）/ P1（≥ 10）/ P2（其他）
+4. **Top 5 强推**，其他只在消息尾部显示计数 + 指向 GitHub 完整报告的链接
+
+#### 静默策略
+
+- 本次 hourly 扫描无 P0/P1 机会 → **不推送**（避免用低价值信号刷屏）
+- hourly consolidator 调用失败 → 同样不推送（宁可漏一次，也不退回原始逐条推送）
+- daily digest 始终发送（即使 0 命中也推一条"雷达安静"）
+
+#### 消息示例
+
+```
+🎯 Reddit 雷达 · 14:00
+━━━━━━━━━━━━━━━━━━
+📊 28 新帖 → 12 信号 → 3 热门机会
+
+🔥 Top 3
+
+🔴 1. AI简历助手 (P0, 聚合 5 帖)
+   需求:高 · 难度:中
+   📝 求职者希望 AI 能自动优化简历内容和格式
+   💡 基于岗位 JD 的 AI 简历生成和定向优化 App
+   👥 求职者、职场新人
+   🔗 r/jobs r/resumes
+   📖 查看原帖
+
+🟡 2. 冰箱菜谱推荐 (P1, 聚合 2 帖)
+   ...
+
+📋 其他 9 条 → GitHub reports
+```
 
 ### 环境变量 / Secrets
 
@@ -157,6 +195,8 @@ reddit-opportunity-radar/
     main.py                 # CLI + 主流程
     reddit_client.py        # .json 端点 + 限速
     scorer.py               # shared-backend llm-chat 调用（OpenAI 兼容 → Gemini）
+    consolidator.py         # LLM 二次加工层：28 条原始信号 → Top 5 机会摘要
+    notifier.py             # Telegram 单条 digest 推送 + 静默策略
     storage.py              # SQLite schema + CRUD
     reporter.py             # Markdown 报告
   data/                     # 运行时创建，SQLite 文件

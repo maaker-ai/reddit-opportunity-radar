@@ -1,4 +1,4 @@
-"""Telegram 推送：命中高分信号时主动通知。
+"""Telegram 推送：把 LLM 二次加工后的机会摘要作为单条消息推送。
 
 鉴权：环境变量 TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID（见 .env.example）。
 失败时只打印日志、不抛异常，避免影响主扫描流程。
@@ -6,7 +6,8 @@
 from __future__ import annotations
 
 import os
-from typing import Any, Iterable, Mapping
+from datetime import datetime, timedelta, timezone
+from typing import Any
 
 import httpx
 
@@ -34,7 +35,7 @@ def send_message(text: str, parse_mode: str = "Markdown") -> bool:
             TG_API.format(token=_token()),
             data={
                 "chat_id": _chat_id(),
-                "text": text[:4000],  # Telegram 单消息 4096 上限，留余量
+                "text": text[:4000],
                 "parse_mode": parse_mode,
                 "disable_web_page_preview": "false",
             },
@@ -50,7 +51,6 @@ def send_message(text: str, parse_mode: str = "Markdown") -> bool:
 
 
 def _escape_md(text: str) -> str:
-    """简单去掉 Markdown 特殊符号，避免消息解析失败。"""
     return (
         text.replace("*", "")
         .replace("_", "")
@@ -60,32 +60,81 @@ def _escape_md(text: str) -> str:
     )
 
 
-def notify_signals(signals: Iterable[Mapping[str, Any]]) -> int:
-    """
-    signals 是本次扫描命中的帖子列表，每个 dict 至少含:
-      subreddit, title, permalink, category, confidence, summary, app_idea, target_audience
-    逐条发送（每条一个 Telegram 消息，便于阅读和单独分享）。
-    返回发送成功的条数。
-    """
-    count = 0
-    for s in signals:
-        title = _escape_md(str(s.get("title", "")))[:100]
-        subreddit = _escape_md(str(s.get("subreddit", "")))
-        summary = _escape_md(str(s.get("summary", "")))
-        app_idea = _escape_md(str(s.get("app_idea", "")))
-        audience = _escape_md(str(s.get("target_audience", "")))
-        category = _escape_md(str(s.get("category", "")))
-        confidence = int(s.get("confidence", 0))
-        permalink = str(s.get("permalink", ""))
+def notify_digest(
+    consolidated: dict[str, Any],
+    scan_time: str,
+    new_count: int,
+    total_signals: int,
+) -> bool:
+    """Send one consolidated digest. Returns True if pushed, False if suppressed."""
+    top = consolidated.get("top_opportunities", []) or []
+    other = int(consolidated.get("other_count", 0) or 0)
 
-        msg = (
-            f"*Reddit 机会雷达* [{category}] conf:{confidence}/10\n\n"
-            f"*r/{subreddit}*: {title}\n\n"
-            f"*需求*：{summary}\n"
-            f"*方案*：{app_idea}\n"
-            f"*用户*：{audience}\n\n"
-            f"[查看原帖]({permalink})"
+    push_worthy = [o for o in top if o.get("priority") in ("P0", "P1")]
+    if not push_worthy:
+        print(
+            f"[notify] suppressed: no P0/P1 opportunities "
+            f"(total={len(top)}, other={other})"
         )
-        if send_message(msg):
-            count += 1
-    return count
+        return False
+
+    report_date = datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d")
+
+    lines = [
+        f"🎯 *Reddit 雷达* · {scan_time}",
+        "━━━━━━━━━━━━━━━━━━",
+        f"📊 {new_count} 新帖 → {total_signals} 信号 → {len(push_worthy)} 热门机会",
+        "",
+        f"🔥 *Top {len(push_worthy)}*",
+        "",
+    ]
+
+    for o in push_worthy:
+        tag = "🔴" if o.get("priority") == "P0" else "🟡"
+        theme = _escape_md(str(o.get("theme", "")))
+        priority = o.get("priority", "P?")
+        post_count = o.get("post_count", 0)
+        rank = o.get("rank", "?")
+        demand = _escape_md(str(o.get("demand_strength", "")))
+        difficulty = _escape_md(str(o.get("tech_difficulty", "")))
+        summary = _escape_md(str(o.get("summary", "")))
+        app_idea = _escape_md(str(o.get("app_idea", "")))
+        audience = _escape_md(str(o.get("target_audience", "")))
+
+        lines.append(
+            f"{tag} *{rank}. {theme}* ({priority}, 聚合 {post_count} 帖)"
+        )
+        lines.append(f"   需求:{demand} · 难度:{difficulty}")
+        lines.append(f"   📝 {summary}")
+        lines.append(f"   💡 {app_idea}")
+        lines.append(f"   👥 {audience}")
+
+        subs_raw = o.get("subreddits") or []
+        if isinstance(subs_raw, list):
+            subs = " ".join(_escape_md(str(s)) for s in subs_raw[:4])
+            lines.append(f"   🔗 {subs}")
+
+        perms = o.get("evidence_permalinks") or []
+        if isinstance(perms, list) and perms:
+            top_link = str(perms[0])
+            if top_link.startswith("http"):
+                url = top_link
+            else:
+                url = f"https://reddit.com{top_link}"
+            lines.append(f"   📖 [查看原帖]({url})")
+        lines.append("")
+
+    if other > 0:
+        lines.append(
+            f"📋 其他 {other} 条 → "
+            f"[GitHub reports](https://github.com/maaker-ai/reddit-opportunity-radar/blob/main/reports/{report_date}.md)"
+        )
+
+    msg = "\n".join(lines)
+    ok = send_message(msg)
+    p0 = len([o for o in push_worthy if o.get("priority") == "P0"])
+    p1 = len([o for o in push_worthy if o.get("priority") == "P1"])
+    print(
+        f"[notify] digest sent={ok}: P0={p0}, P1={p1}, other={other}"
+    )
+    return ok

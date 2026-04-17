@@ -4,13 +4,14 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import yaml
 from dotenv import load_dotenv
 
-from radar.notifier import notify_signals
+from radar.consolidator import consolidate
+from radar.notifier import notify_digest
 from radar.reddit_client import Post, RedditClient
 from radar.reporter import write_report
 from radar.scorer import Score, Scorer
@@ -155,7 +156,7 @@ def main(argv: list[str] | None = None) -> int:
         min_confidence=min_conf,
     )
 
-    # Telegram 推送：只推本次扫描新命中的高分信号
+    # Telegram 推送：LLM 二次加工成 Top N 摘要，单条推送
     new_signals = [
         {
             "subreddit": p.subreddit,
@@ -166,14 +167,27 @@ def main(argv: list[str] | None = None) -> int:
             "summary": p.score.get("summary", ""),
             "app_idea": p.score.get("app_idea", ""),
             "target_audience": p.score.get("target_audience", ""),
+            "is_signal": bool(p.is_signal),
         }
         for p in rows
         if p.is_signal and p.confidence >= min_conf
     ]
     if new_signals and os.getenv("TELEGRAM_BOT_TOKEN"):
-        print(f"[notify] pushing {len(new_signals)} signals to Telegram")
-        sent = notify_signals(new_signals)
-        print(f"[notify] sent {sent}/{len(new_signals)}")
+        print(f"[consolidate] running on {len(new_signals)} signals")
+        try:
+            consolidated = consolidate(new_signals, model=model)
+            top_n = len(consolidated.get("top_opportunities", []) or [])
+            other_n = int(consolidated.get("other_count", 0) or 0)
+            print(f"[consolidate] top={top_n} other={other_n}")
+            scan_time = datetime.now(timezone(timedelta(hours=8))).strftime("%H:%M")
+            notify_digest(
+                consolidated,
+                scan_time=scan_time,
+                new_count=total_new,
+                total_signals=len(new_signals),
+            )
+        except Exception as e:
+            print(f"[consolidate] failed: {e}; skipping push (no fallback to raw spam)")
     elif new_signals:
         print(
             f"[notify] {len(new_signals)} signals detected but "
