@@ -26,3 +26,6 @@ fetch:
 scoring:
   model: "gemini-2.5-flash"            # 经 shared-backend llm-chat 调用（白名单内）
   min_confidence: 6                    # 只把 confidence >= N 的写入报告"命中"部分
+
+notify:
+  dedupe_days: 30                      # Telegram 推送去重窗口（天数）：近 N 天已推过的主题不再重复推

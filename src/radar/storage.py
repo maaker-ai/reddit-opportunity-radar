@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -24,6 +25,18 @@ CREATE TABLE IF NOT EXISTS seen_posts (
 );
 CREATE INDEX IF NOT EXISTS idx_subreddit ON seen_posts(subreddit);
 CREATE INDEX IF NOT EXISTS idx_is_signal ON seen_posts(is_signal, confidence);
+CREATE TABLE IF NOT EXISTS pushed_opportunities (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  theme TEXT NOT NULL,
+  summary TEXT,
+  app_idea TEXT,
+  target_audience TEXT,
+  differentiation TEXT,
+  evidence_permalinks TEXT,
+  pushed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_pushed_at ON pushed_opportunities(pushed_at);
+CREATE INDEX IF NOT EXISTS idx_theme ON pushed_opportunities(theme);
 """
 
 
@@ -137,6 +150,54 @@ class Storage:
             ids,
         )
         return [self._row_to_post(r) for r in cur.fetchall()]
+
+    def recent_themes(self, days: int = 30) -> list[dict]:
+        """返回最近 days 天内已推过的主题列表，按 pushed_at 倒序，最多 50 条。"""
+        since = (
+            datetime.now(timezone.utc) - timedelta(days=days)
+        ).strftime("%Y-%m-%d %H:%M:%S")
+        cur = self.conn.execute(
+            """
+            SELECT theme, summary, pushed_at
+            FROM pushed_opportunities
+            WHERE pushed_at >= ?
+            ORDER BY pushed_at DESC
+            LIMIT 50
+            """,
+            (since,),
+        )
+        return [
+            {"theme": row["theme"], "summary": row["summary"] or "", "pushed_at": row["pushed_at"]}
+            for row in cur.fetchall()
+        ]
+
+    def record_pushed(
+        self,
+        *,
+        theme: str,
+        summary: str,
+        app_idea: str,
+        target_audience: str,
+        differentiation: str,
+        evidence_permalinks: list[str],
+    ) -> None:
+        """记录一条已推送的机会。"""
+        self.conn.execute(
+            """
+            INSERT INTO pushed_opportunities
+              (theme, summary, app_idea, target_audience, differentiation, evidence_permalinks)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                theme,
+                summary,
+                app_idea,
+                target_audience,
+                differentiation,
+                json.dumps(evidence_permalinks, ensure_ascii=False),
+            ),
+        )
+        self.conn.commit()
 
     @staticmethod
     def _row_to_post(row: sqlite3.Row) -> StoredPost:

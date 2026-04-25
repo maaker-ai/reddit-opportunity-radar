@@ -11,7 +11,7 @@ import yaml
 from dotenv import load_dotenv
 
 from radar.consolidator import consolidate
-from radar.notifier import notify_digest
+from radar.notifier import notify_opportunity
 from radar.reddit_client import Post, RedditClient
 from radar.reporter import write_report
 from radar.scorer import Score, Scorer
@@ -73,6 +73,8 @@ def main(argv: list[str] | None = None) -> int:
     max_comments = int(fetch_cfg.get("max_comments_per_post", 20))
     qpm = int(fetch_cfg.get("rate_limit_qpm", 6))
     user_agent = str(fetch_cfg.get("user_agent", "opportunity-radar/0.1 by placeholder"))
+    notify_cfg = cfg.get("notify", {})
+    dedupe_days = int(notify_cfg.get("dedupe_days", 30))
     model = str(scoring_cfg.get("model", "anthropic/claude-sonnet-4.6"))
     min_conf = int(scoring_cfg.get("min_confidence", 6))
 
@@ -172,27 +174,40 @@ def main(argv: list[str] | None = None) -> int:
         for p in rows
         if p.is_signal and p.confidence >= min_conf
     ]
-    if new_signals and os.getenv("TELEGRAM_BOT_TOKEN"):
+    if new_signals:
         print(f"[consolidate] running on {len(new_signals)} signals")
         try:
-            consolidated = consolidate(new_signals, model=model)
-            top_n = len(consolidated.get("top_opportunities", []) or [])
-            other_n = int(consolidated.get("other_count", 0) or 0)
-            print(f"[consolidate] top={top_n} other={other_n}")
-            scan_time = datetime.now(timezone(timedelta(hours=8))).strftime("%H:%M")
-            notify_digest(
-                consolidated,
-                scan_time=scan_time,
-                new_count=total_new,
-                total_signals=len(new_signals),
-            )
+            # 1. 拉过去 dedupe_days 天已推主题（跨期去重用）
+            recent = storage.recent_themes(days=dedupe_days)
+            # 2. 调 consolidate（传 recent，让 LLM 自行去重 + 蓝海判断）
+            consolidated = consolidate(new_signals, recent_themes=recent, model=model)
+            opportunities = consolidated.get("opportunities", []) or []
+            print(f"[consolidate] total_clusters={len(opportunities)}")
+            # 3. 逐条推送 + 记录
+            pushed_count = 0
+            skipped_count = 0
+            for opp in opportunities:
+                if not opp.get("is_worth_telling"):
+                    skip_reason = opp.get("skip_reason", "")
+                    print(f"[notify] skip: theme={opp.get('theme', '')!r} reason={skip_reason!r}")
+                    skipped_count += 1
+                    continue
+                if not os.getenv("TELEGRAM_BOT_TOKEN"):
+                    continue  # 无 TG 配置就只生成 report，不推送
+                ok = notify_opportunity(opp)
+                if ok:
+                    storage.record_pushed(
+                        theme=str(opp.get("theme", "")),
+                        summary=str(opp.get("summary", "")),
+                        app_idea=str(opp.get("app_idea", "")),
+                        target_audience=str(opp.get("target_audience", "")),
+                        differentiation=str(opp.get("differentiation", "")),
+                        evidence_permalinks=opp.get("evidence_permalinks") or [],
+                    )
+                    pushed_count += 1
+            print(f"[notify] pushed={pushed_count} skipped={skipped_count} total_clusters={len(opportunities)}")
         except Exception as e:
             print(f"[consolidate] failed: {e}; skipping push (no fallback to raw spam)")
-    elif new_signals:
-        print(
-            f"[notify] {len(new_signals)} signals detected but "
-            "TELEGRAM_BOT_TOKEN not set; skipping push"
-        )
     else:
         print("[notify] 0 signals to push")
 

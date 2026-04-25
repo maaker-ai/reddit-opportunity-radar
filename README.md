@@ -19,42 +19,36 @@
   - 对过去 24h 所有命中信号再次调 consolidator 去重聚合（hourly 推过的同簇合并）
   - 发一条 Telegram 汇总消息（无命中时也发一条"雷达安静"）
 
-### Digest 推送格式
+### 推送逻辑
 
-每次 hourly 扫描结束后，把原始信号扔给 LLM 做二次加工：
+每次 hourly 扫描结束后，把当批信号扔给 LLM 做二次加工，判断**哪些机会真正值得推送**：
 
-1. **语义聚类**：按"需求类别 × 目标用户"把相似帖子归为一个机会簇
-2. **机会分** = 簇内帖子数 × 平均 confidence × 类别权重（NEED=1.2 / REQUEST=1.1 / PAIN=1.0 / COMPLAINT=0.9）
-3. **评级**：P0（机会分 ≥ 20）/ P1（≥ 10）/ P2（其他）
-4. **Top 5 强推**，其他只在消息尾部显示计数 + 指向 GitHub 完整报告的链接
+1. **语义聚类**：把"核心需求 × 目标用户"相似的帖子归为同一机会簇
+2. **蓝海判断**：LLM 对每个簇独立判断 `is_worth_telling`
+   - **值得推送**：存在蓝海空间，或现有竞品有明显差异化切入点（功能空白、定价空间、平台/地区空白等）
+   - **不推送**：已被成熟产品充分满足且无差异化空间；或与过去 30 天已推主题语义重复；或信号太弱
+3. **逐条独立推送**：每条值得推的机会单独发一条 Telegram 消息（不再做 Top N 截断）
+4. **跨期去重**：已推过的主题记入 `pushed_opportunities` 表，下次扫描时传给 LLM 参考，同一主题 30 天内不重复推
 
 #### 静默策略
 
-- 本次 hourly 扫描无 P0/P1 机会 → **不推送**（避免用低价值信号刷屏）
-- hourly consolidator 调用失败 → 同样不推送（宁可漏一次，也不退回原始逐条推送）
-- daily digest 始终发送（即使 0 命中也推一条"雷达安静"）
+- 本次扫描无蓝海机会（全部 `is_worth_telling=false`）→ **不推送**（LLM 会说明跳过原因）
+- hourly consolidator 调用失败 → 同样不推送
+- daily digest 始终发送摘要消息（即使 0 命中也推"雷达安静"），并对 hourly 漏推的机会做兜底补推
 
 #### 消息示例
 
 ```
-🎯 Reddit 雷达 · 14:00
-━━━━━━━━━━━━━━━━━━
-📊 28 新帖 → 12 信号 → 3 热门机会
+💡 AI 简历优化 给 求职者
 
-🔥 Top 3
+📝 求职者希望 AI 能基于岗位 JD 自动定向优化简历...
+💼 App 想法：根据 JD 一键生成定向简历，含 ATS 友好度评分
+🎯 差异化：现有 Resume.io / Kickresume 都是固定模板，无法针对具体 JD 改写
+🥊 竞品：Resume.io、Teal HQ 主打通用模板；ChatGPT 无结构化评分
+👥 求职者、职场新人、应届生
 
-🔴 1. AI简历助手 (P0, 聚合 5 帖)
-   需求:高 · 难度:中
-   📝 求职者希望 AI 能自动优化简历内容和格式
-   💡 基于岗位 JD 的 AI 简历生成和定向优化 App
-   👥 求职者、职场新人
-   🔗 r/jobs r/resumes
-   📖 查看原帖
-
-🟡 2. 冰箱菜谱推荐 (P1, 聚合 2 帖)
-   ...
-
-📋 其他 9 条 → GitHub reports
+🔗 r/jobs · r/resumes
+📖 查看原帖
 ```
 
 ### 环境变量 / Secrets
@@ -195,8 +189,8 @@ reddit-opportunity-radar/
     main.py                 # CLI + 主流程
     reddit_client.py        # .json 端点 + 限速
     scorer.py               # shared-backend llm-chat 调用（OpenAI 兼容 → Gemini）
-    consolidator.py         # LLM 二次加工层：28 条原始信号 → Top 5 机会摘要
-    notifier.py             # Telegram 单条 digest 推送 + 静默策略
+    consolidator.py         # LLM 二次加工层：原始信号 → 蓝海机会列表（含 is_worth_telling 判断）
+    notifier.py             # Telegram 逐条机会推送 + 跨期去重
     storage.py              # SQLite schema + CRUD
     reporter.py             # Markdown 报告
   data/                     # 运行时创建，SQLite 文件

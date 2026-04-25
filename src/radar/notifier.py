@@ -1,4 +1,4 @@
-"""Telegram 推送：把 LLM 二次加工后的机会摘要作为单条消息推送。
+"""Telegram 推送：把单条蓝海机会作为独立消息推送。
 
 鉴权：环境变量 TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID（见 .env.example）。
 失败时只打印日志、不抛异常，避免影响主扫描流程。
@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import os
-from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import httpx
@@ -60,81 +59,50 @@ def _escape_md(text: str) -> str:
     )
 
 
-def notify_digest(
-    consolidated: dict[str, Any],
-    scan_time: str,
-    new_count: int,
-    total_signals: int,
-) -> bool:
-    """Send one consolidated digest. Returns True if pushed, False if suppressed."""
-    top = consolidated.get("top_opportunities", []) or []
-    other = int(consolidated.get("other_count", 0) or 0)
+def notify_opportunity(opp: dict[str, Any]) -> bool:
+    """推送单条蓝海机会消息到 Telegram。返回是否成功。"""
+    theme = _escape_md(str(opp.get("theme", "")))
+    summary = _escape_md(str(opp.get("summary", "") or ""))
+    app_idea = _escape_md(str(opp.get("app_idea", "") or ""))
+    target_audience = _escape_md(str(opp.get("target_audience", "") or ""))
+    differentiation = _escape_md(str(opp.get("differentiation", "") or ""))
+    competitor_landscape = _escape_md(str(opp.get("competitor_landscape", "") or ""))
 
-    push_worthy = [o for o in top if o.get("priority") in ("P0", "P1")]
-    if not push_worthy:
-        print(
-            f"[notify] suppressed: no P0/P1 opportunities "
-            f"(total={len(top)}, other={other})"
-        )
-        return False
+    lines: list[str] = []
+    lines.append(f"💡 *{theme}*")
+    lines.append("")
 
-    report_date = datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d")
+    if summary:
+        lines.append(f"📝 {summary}")
 
-    lines = [
-        f"🎯 *Reddit 雷达* · {scan_time}",
-        "━━━━━━━━━━━━━━━━━━",
-        f"📊 {new_count} 新帖 → {total_signals} 信号 → {len(push_worthy)} 热门机会",
-        "",
-        f"🔥 *Top {len(push_worthy)}*",
-        "",
-    ]
+    if app_idea:
+        lines.append(f"💼 *App 想法*：{app_idea}")
 
-    for o in push_worthy:
-        tag = "🔴" if o.get("priority") == "P0" else "🟡"
-        theme = _escape_md(str(o.get("theme", "")))
-        priority = o.get("priority", "P?")
-        post_count = o.get("post_count", 0)
-        rank = o.get("rank", "?")
-        demand = _escape_md(str(o.get("demand_strength", "")))
-        difficulty = _escape_md(str(o.get("tech_difficulty", "")))
-        summary = _escape_md(str(o.get("summary", "")))
-        app_idea = _escape_md(str(o.get("app_idea", "")))
-        audience = _escape_md(str(o.get("target_audience", "")))
+    if differentiation:
+        lines.append(f"🎯 *差异化*：{differentiation}")
 
-        lines.append(
-            f"{tag} *{rank}. {theme}* ({priority}, 聚合 {post_count} 帖)"
-        )
-        lines.append(f"   需求:{demand} · 难度:{difficulty}")
-        lines.append(f"   📝 {summary}")
-        lines.append(f"   💡 {app_idea}")
-        lines.append(f"   👥 {audience}")
+    if competitor_landscape:
+        lines.append(f"🥊 *竞品*：{competitor_landscape}")
 
-        subs_raw = o.get("subreddits") or []
-        if isinstance(subs_raw, list):
-            subs = " ".join(_escape_md(str(s)) for s in subs_raw[:4])
-            lines.append(f"   🔗 {subs}")
+    if target_audience:
+        lines.append(f"👥 {target_audience}")
 
-        perms = o.get("evidence_permalinks") or []
-        if isinstance(perms, list) and perms:
-            top_link = str(perms[0])
-            if top_link.startswith("http"):
-                url = top_link
-            else:
-                url = f"https://reddit.com{top_link}"
-            lines.append(f"   📖 [查看原帖]({url})")
+    # subreddits
+    subs_raw = opp.get("subreddits") or []
+    if isinstance(subs_raw, list) and subs_raw:
+        subs_str = " · ".join(_escape_md(str(s)) for s in subs_raw[:6])
         lines.append("")
+        lines.append(f"🔗 {subs_str}")
 
-    if other > 0:
-        lines.append(
-            f"📋 其他 {other} 条 → "
-            f"[GitHub reports](https://github.com/maaker-ai/reddit-opportunity-radar/blob/main/reports/{report_date}.md)"
-        )
+    # 第一条证据链接
+    perms = opp.get("evidence_permalinks") or []
+    if isinstance(perms, list) and perms:
+        top_link = str(perms[0])
+        if not top_link.startswith("http"):
+            top_link = f"https://reddit.com{top_link}"
+        lines.append(f"📖 [查看原帖]({top_link})")
 
     msg = "\n".join(lines)
     ok = send_message(msg)
-    p0 = len([o for o in push_worthy if o.get("priority") == "P0"])
-    p1 = len([o for o in push_worthy if o.get("priority") == "P1"])
-    print(
-        f"[notify] digest sent={ok}: P0={p0}, P1={p1}, other={other}"
-    )
+    print(f"[notify] opportunity sent={ok}: theme={opp.get('theme', '')!r}")
     return ok

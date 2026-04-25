@@ -1,8 +1,8 @@
 """每日 Telegram 汇总（UTC 00:00 / UTC+8 08:00 跑一次）。
 
 - 读过去 24 小时 SQLite 中命中的信号（confidence >= 6）
-- 调 consolidator 做语义去重聚合（hourly 多次推过的同簇合并）
-- 发一条汇总 Telegram 消息
+- 调 consolidator 做语义聚类 + 蓝海判断（同样传 recent_themes 去重）
+- 把 is_worth_telling=true 的机会逐条推送（作为 hourly 漏推的兜底）
 - 无命中时仍发一条"昨天雷达安静"的消息（日报始终发送）
 """
 from __future__ import annotations
@@ -20,7 +20,8 @@ sys.path.insert(0, str(ROOT / "src"))
 from dotenv import load_dotenv  # noqa: E402
 
 from radar.consolidator import consolidate  # noqa: E402
-from radar.notifier import _escape_md, send_message  # noqa: E402
+from radar.notifier import _escape_md, notify_opportunity, send_message  # noqa: E402
+from radar.storage import Storage  # noqa: E402
 
 DB = ROOT / "data" / "seen_posts.db"
 REPO_URL = "https://github.com/maaker-ai/reddit-opportunity-radar"
@@ -57,30 +58,6 @@ def _load_recent_signals(conn: sqlite3.Connection, since_iso: str) -> list[dict]
     return out
 
 
-def _category_breakdown(conn: sqlite3.Connection, since_iso: str) -> list[tuple[str, int]]:
-    cur = conn.cursor()
-    cur.execute(
-        "SELECT category, COUNT(*) FROM seen_posts "
-        "WHERE fetched_at > ? AND is_signal = 1 AND confidence >= 6 "
-        "GROUP BY category ORDER BY COUNT(*) DESC",
-        (since_iso,),
-    )
-    return [(row[0], row[1]) for row in cur.fetchall()]
-
-
-def _subreddit_distribution(
-    conn: sqlite3.Connection, since_iso: str
-) -> list[tuple[str, int]]:
-    cur = conn.cursor()
-    cur.execute(
-        "SELECT subreddit, COUNT(*) FROM seen_posts "
-        "WHERE fetched_at > ? AND is_signal = 1 AND confidence >= 6 "
-        "GROUP BY subreddit ORDER BY COUNT(*) DESC LIMIT 5",
-        (since_iso,),
-    )
-    return [(row[0], row[1]) for row in cur.fetchall()]
-
-
 def _total_scanned(conn: sqlite3.Connection, since_iso: str) -> int:
     cur = conn.cursor()
     cur.execute(
@@ -111,8 +88,6 @@ def main() -> int:
     try:
         total = _total_scanned(conn, since_iso)
         signals = _load_recent_signals(conn, since_iso)
-        by_cat = _category_breakdown(conn, since_iso)
-        by_sub = _subreddit_distribution(conn, since_iso)
     finally:
         conn.close()
 
@@ -129,67 +104,58 @@ def main() -> int:
         print(f"[digest] quiet day sent={ok} total={total}")
         return 0 if ok else 1
 
-    consolidated: dict = {"top_opportunities": [], "other_count": 0}
+    # 拉 30 天已推主题做去重（daily 和 hourly 共享同一张表）
+    storage = Storage(DB)
     try:
-        consolidated = consolidate(signals)
+        recent = storage.recent_themes(days=30)
+    finally:
+        storage.close()
+
+    opportunities: list[dict] = []
+    try:
+        consolidated = consolidate(signals, recent_themes=recent)
+        opportunities = consolidated.get("opportunities", []) or []
     except Exception as e:
-        print(f"[digest] consolidator failed: {e}; falling back to flat list")
+        print(f"[digest] consolidator failed: {e}; will only send summary")
 
-    top = consolidated.get("top_opportunities", []) or []
-    other = int(consolidated.get("other_count", 0) or 0)
+    worth_telling = [o for o in opportunities if o.get("is_worth_telling")]
 
-    lines = [
-        f"📅 *Reddit 雷达日报* · {today}",
-        "━━━━━━━━━━━━━━━━━━",
-        f"过去 24h：扫描 {total} 帖，命中 {hits} 条",
-        "",
-    ]
-
-    if top:
-        lines.append(f"🔥 *Top {len(top)} 机会*（语义去重聚合）")
-        lines.append("")
-        for o in top:
-            priority = o.get("priority", "P?")
-            tag = "🔴" if priority == "P0" else ("🟡" if priority == "P1" else "⚪")
-            theme = _escape_md(str(o.get("theme", "")))
-            rank = o.get("rank", "?")
-            post_count = o.get("post_count", 0)
-            demand = _escape_md(str(o.get("demand_strength", "")))
-            difficulty = _escape_md(str(o.get("tech_difficulty", "")))
-            summary = _escape_md(str(o.get("summary", "")))
-            app_idea = _escape_md(str(o.get("app_idea", "")))
-            lines.append(f"{tag} *{rank}. {theme}* ({priority}, 聚合 {post_count} 帖)")
-            lines.append(f"   需求:{demand} · 难度:{difficulty}")
-            lines.append(f"   📝 {summary}")
-            lines.append(f"   💡 {app_idea}")
-            lines.append("")
-
-    if by_cat:
-        lines.append("*分类分布：*")
-        lines.append("  " + " · ".join(f"{_escape_md(c)}:{n}" for c, n in by_cat))
-        lines.append("")
-
-    if by_sub:
-        lines.append("*Top Subreddits：*")
-        lines.append(
-            "  " + " · ".join(f"r/{_escape_md(s)}:{n}" for s, n in by_sub)
-        )
-        lines.append("")
-
-    if other > 0:
-        lines.append(
-            f"📋 其他 {other} 条 → [完整报告]({REPO_URL}/blob/main/reports/{today}.md)"
-        )
-    else:
-        lines.append(f"完整历史：{REPO_URL}/tree/main/reports")
-
-    msg = "\n".join(lines)
-    ok = send_message(msg)
-    print(
-        f"[digest] sent={ok} total={total} hits={hits} "
-        f"top={len(top)} other={other}"
+    # 发一条简洁的日报头
+    header = (
+        f"📅 *Reddit 雷达日报* · {today}\n"
+        f"过去 24h：扫描 {total} 帖，命中 {hits} 条"
     )
-    return 0 if ok else 1
+    if worth_telling:
+        header += f"，发现 {len(worth_telling)} 条蓝海机会"
+    else:
+        header += "，无新蓝海机会（hourly 已推或无差异化空间）"
+
+    send_message(header)
+
+    # 逐条推送蓝海机会（作为 hourly 漏推的兜底）
+    storage2 = Storage(DB)
+    try:
+        pushed_count = 0
+        for opp in worth_telling:
+            ok = notify_opportunity(opp)
+            if ok:
+                storage2.record_pushed(
+                    theme=str(opp.get("theme", "")),
+                    summary=str(opp.get("summary", "")),
+                    app_idea=str(opp.get("app_idea", "")),
+                    target_audience=str(opp.get("target_audience", "")),
+                    differentiation=str(opp.get("differentiation", "")),
+                    evidence_permalinks=opp.get("evidence_permalinks") or [],
+                )
+                pushed_count += 1
+    finally:
+        storage2.close()
+
+    print(
+        f"[digest] sent summary + {pushed_count} opportunities; "
+        f"total={total} hits={hits} clusters={len(opportunities)}"
+    )
+    return 0
 
 
 if __name__ == "__main__":

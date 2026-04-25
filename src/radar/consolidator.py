@@ -1,7 +1,8 @@
-"""把多条原始信号二次加工为 Top N 机会摘要。
+"""把多条原始信号二次加工为蓝海机会列表。
 
-输入：scorer 输出的 is_signal=1 帖子列表
-输出：{"top_opportunities": [...], "other_count": int}
+输入：scorer 输出的 is_signal=1 帖子列表 + 近期已推主题（去重用）
+输出：{"opportunities": [...]}
+每个机会包含 is_worth_telling 字段，由 LLM 判断是否蓝海/有差异化空间。
 """
 from __future__ import annotations
 
@@ -13,55 +14,65 @@ import httpx
 
 LLM_ENDPOINT = "https://rxcrvznwlqcaqrlaxmdf.supabase.co/functions/v1/llm-chat"
 
-CONSOLIDATE_PROMPT = """你是 App 机会分析师。用户给你一批已评分的 Reddit 需求信号（从多个 subreddit 扫来），你要：
+CONSOLIDATE_PROMPT = """你是出海独立开发 App 的机会分析师。用户给你一批从 Reddit 扫来的需求信号，你要：
 
-1. 语义聚类：把"需求类别 × 目标用户"都相似的帖子归为同一机会簇（例如 3 个 "AI 辅助简历" 给职场人的帖子 = 1 个簇）
-2. 打机会分：`机会分 = 簇内帖子数 × 平均 confidence × 类别权重`
-   - 类别权重：NEED=1.2, REQUEST=1.1, PAIN=1.0, COMPLAINT=0.9
-3. 评级：P0（机会分 ≥ 20）/ P1（≥ 10）/ P2（其他）
-4. 排序：按机会分降序
-5. Top 5：只输出前 5 个聚类（不足 5 全输出），其余合并到 other_count
+1. **语义聚类**：把"核心需求 × 目标用户"都相似的帖子归为同一机会簇。
+2. **对每个簇判断 `is_worth_telling`**：
+   - **true（值得推送）的标准**：存在蓝海空间，或现有竞品/方案有明显差异化切入点（功能空白、定价空间、平台空白、地区空白等）。
+   - **false（不推送）的标准**：
+     a. 已经被现有成熟产品充分满足，且没有明显差异化空间；
+     b. 与下方"近期已推过的主题列表"中任意一条**语义重复**（即使措辞不同，实质相同就算重复）；
+     c. 信号太弱（只有 1 条吐槽且无明确需求表达）。
+   - 当 `is_worth_telling=false` 时，**必须填 `skip_reason`**，其他字段可留空字符串。
+3. **必须填写**（仅当 `is_worth_telling=true` 时）：
+   - `differentiation`：具体的差异化切入点，2-3 句，要具体不要泛泛（如"现有 X 产品缺少 Y 功能，且定价对 Z 群体不友好"）
+   - `competitor_landscape`：你了解的竞品简评，1-2 句（如"已有 Resume.io、Teal HQ，但均为通用模板，缺少 JD 定向优化"）
+4. **theme 格式**：稳定可读的中文短句，格式为「核心功能 给 目标用户」，例如"AI 简历优化 给 求职者"。同一类需求每次应生成相同或高度相似的 theme，便于跨期去重。
+5. 输入会包含两部分：
+   - 本批次 signals（JSON 数组）
+   - 近期已推主题列表 recent_themes（如有）——用于语义去重判断
 
-严格返回以下 JSON（不要任何额外文字、不要 markdown fence）：
+严格返回以下 JSON（不要任何额外文字，不要 markdown fence，不要代码块标记）：
 {{
-  "top_opportunities": [
+  "opportunities": [
     {{
-      "rank": 1,
-      "priority": "P0",
-      "theme": "简短主题，8 字内",
-      "post_count": 3,
-      "avg_confidence": 8.3,
-      "opportunity_score": 29.88,
-      "summary": "需求总结，一句中文",
-      "app_idea": "可能的 App 方案，一句中文",
-      "target_audience": "目标用户画像",
-      "tech_difficulty": "低" 或 "中" 或 "高",
-      "demand_strength": "高" 或 "中高" 或 "中" 或 "低",
-      "subreddits": ["r/xxx", "r/yyy"],
-      "evidence_permalinks": ["/r/.../comments/.../"]
+      "theme": "AI 简历优化 给 求职者",
+      "is_worth_telling": true,
+      "skip_reason": "",
+      "summary": "求职者希望 AI 能基于岗位 JD 自动优化简历，现有工具都是通用模板...",
+      "app_idea": "根据岗位 JD 一键生成定向简历，含 ATS 友好度评分",
+      "target_audience": "求职者、职场新人、应届生",
+      "differentiation": "现有 Resume.io / Kickresume 都是固定模板，无法针对具体 JD 定向改写；ATS 评分功能在免费工具中几乎空白",
+      "competitor_landscape": "Resume.io、Teal HQ、Kickresume 主打通用模板；ChatGPT 虽可优化但缺结构化评分和一键导出",
+      "subreddits": ["r/jobs", "r/resumes"],
+      "evidence_permalinks": ["/r/jobs/comments/xxx/"]
     }}
-  ],
-  "other_count": 23
+  ]
 }}
 
-输入信号列表：
+---
+
+本批次信号：
 {signals_json}
-"""
+{recent_themes_section}"""
 
 
 def consolidate(
     signals: list[dict[str, Any]],
+    recent_themes: list[dict[str, Any]] | None = None,
     model: str = "gemini-2.5-flash",
     endpoint: str = LLM_ENDPOINT,
     timeout: float = 60.0,
 ) -> dict[str, Any]:
-    """Consolidate raw signals into prioritized opportunities.
+    """Consolidate raw signals into blue-ocean opportunity candidates.
 
     signals: list of dicts with keys subreddit, permalink, category,
              confidence, summary, app_idea, target_audience, is_signal
+    recent_themes: list of dicts with keys theme, summary, pushed_at
+                   (used for cross-period deduplication)
     """
     if not signals:
-        return {"top_opportunities": [], "other_count": 0}
+        return {"opportunities": []}
 
     compact = [
         {
@@ -78,10 +89,24 @@ def consolidate(
     ]
 
     if not compact:
-        return {"top_opportunities": [], "other_count": 0}
+        return {"opportunities": []}
+
+    # 构建近期已推主题段落（最多 50 条，只取 theme + summary）
+    recent_themes_section = ""
+    if recent_themes:
+        trimmed = recent_themes[:50]
+        recent_list = [
+            {"theme": t.get("theme", ""), "summary": (t.get("summary", "") or "")[:100]}
+            for t in trimmed
+        ]
+        recent_themes_section = (
+            "\n近期已推主题列表（语义重复的请标记 is_worth_telling=false）：\n"
+            + json.dumps(recent_list, ensure_ascii=False)
+        )
 
     prompt = CONSOLIDATE_PROMPT.format(
-        signals_json=json.dumps(compact, ensure_ascii=False)
+        signals_json=json.dumps(compact, ensure_ascii=False),
+        recent_themes_section=recent_themes_section,
     )
 
     secret = os.getenv("LLM_CHAT_SECRET")
@@ -116,7 +141,7 @@ def consolidate(
 
 def _parse_json_lenient(text: str) -> dict[str, Any]:
     """宽松解析：去 markdown fence + 截取第一个平衡的 {...} 块。
-    响应被截断时尝试抢救：从 top_opportunities 数组中保留已完整的元素。
+    响应被截断时尝试抢救：从 opportunities 数组中保留已完整的元素。
     """
     t = text.strip()
     if t.startswith("```"):
@@ -154,18 +179,18 @@ def _parse_json_lenient(text: str) -> dict[str, Any]:
             if depth == 0:
                 return json.loads(t[start : i + 1])
 
-    # 抢救：响应被截断。从第一个 `"top_opportunities": [` 开始，
+    # 抢救：响应被截断。从第一个 `"opportunities": [` 开始，
     # 手动解析已完整的数组元素（到最后一个平衡的 }），拼出合法 JSON。
     salvaged = _salvage_truncated(t[start:])
     if salvaged is not None:
-        print(f"[consolidator] salvaged {len(salvaged.get('top_opportunities', []))} items from truncated response")
+        print(f"[consolidator] salvaged {len(salvaged.get('opportunities', []))} items from truncated response")
         return salvaged
     raise ValueError("unbalanced JSON in consolidator response")
 
 
 def _salvage_truncated(body: str) -> dict[str, Any] | None:
-    """Truncated response salvage: extract completed top_opportunities items."""
-    marker = '"top_opportunities"'
+    """Truncated response salvage: extract completed opportunities items."""
+    marker = '"opportunities"'
     m_idx = body.find(marker)
     if m_idx < 0:
         return None
@@ -208,4 +233,4 @@ def _salvage_truncated(body: str) -> dict[str, Any] | None:
 
     if not items:
         return None
-    return {"top_opportunities": items, "other_count": 0}
+    return {"opportunities": items}
