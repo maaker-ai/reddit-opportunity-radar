@@ -62,7 +62,7 @@ def consolidate(
     recent_themes: list[dict[str, Any]] | None = None,
     model: str = "gemini-2.5-flash",
     endpoint: str = LLM_ENDPOINT,
-    timeout: float = 60.0,
+    timeout: float = 180.0,
 ) -> dict[str, Any]:
     """Consolidate raw signals into blue-ocean opportunity candidates.
 
