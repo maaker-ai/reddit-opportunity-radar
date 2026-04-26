@@ -2,16 +2,23 @@
 # 修改 user_agent 里的 <your-reddit-username> 为你的真实 Reddit 用户名
 
 subreddits:
-  - SomebodyMakeThis
-  - AppIdeas
-  - AppHookup
-  - lightweightapps
-  - productivity
-  - getdisciplined
-  - selfimprovement
-  - iosapps
-  - androidapps
-  - Entrepreneur
+  # 直接求 App / 工具的金矿
+  - SomebodyMakeThis      # "Somebody make this..." 直接说想要什么
+  - AppIdeas              # 单纯讨论 App 想法
+  - androidapps           # 24% 信号率：用户在求"是否有 App 能 X"
+  # 独立开发者社区（创业/工具吐槽密集）
+  - indiehackers          # 20% 信号率：独立开发者讨论
+  - buildinpublic         # 16% 信号率：公开构建，发帖密集
+  - SideProject           # 副业项目展示+反馈（含竞品情报）
+  # 开发者工具方向
+  - ChatGPTCoding         # 12% 信号率：AI 编程工具需求
+  - devtools              # 12% 信号率：开发者工具讨论
+  # SaaS 商业方向
+  - SaaS                  # SaaS 风向 + 偶尔有真需求
+  - microsaas             # 小型 SaaS 圈子
+  # 已移除（2026-04-26 评估，0-4% 信号率或纯情绪/自宣噪音）：
+  #   AppHookup / lightweightapps / productivity / getdisciplined /
+  #   selfimprovement / iosapps / Entrepreneur
 
 fetch:
   posts_per_subreddit: 10              # 每个 sub 拉最新 N 条（10 × 10 sub = 100 posts/次扫描，
